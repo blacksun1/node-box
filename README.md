@@ -12,14 +12,19 @@ this
 
 ```bash
 aws cloudformation create-stack \
-	--template-body file:////git//node-box//cf//create_server.yaml \
-	--stack-name nodebox \
-	--parameters \
-		ParameterKey=MongoDbAdminUser,ParameterValue=mongo \
-		ParameterKey=MongoDbAdminPassword,ParameterValue=MySuperSecretPassword123 \
-		ParameterKey=KeyName,ParameterValue=myPrivateKey && \
-aws cloudformation wait stack-create-complete --stack-name nodeUp && \
-aws cloudformation describe-stacks --stack-name nodeUp && aws cloudformation describe-stack-events --stack-name nodeUp --query 'StackEvents[].{ResourceStatus:ResourceStatus,ResourceType:ResourceType,ResourceStatusReason:ResourceStatusReason}' --output table
+    --template-body file:////git//node-box//cf//create_server.yaml \
+    --stack-name nodebox \
+    --parameters \
+        ParameterKey=MongoDbAdminUser,ParameterValue=mongo \
+        ParameterKey=MongoDbAdminPassword,ParameterValue=MySuperSecretPassword123 \
+        ParameterKey=KeyName,ParameterValue=myPrivateKey && \
+aws cloudformation wait stack-create-complete --stack-name nodebox && \
+aws cloudformation describe-stacks \
+    --stack-name nodebox && \
+aws cloudformation describe-stack-events \
+    --stack-name nodebox \
+    --query 'StackEvents[].{ResourceStatus:ResourceStatus,ResourceType:ResourceType,ResourceStatusReason:ResourceStatusReason}'\
+    --output table
 ```
 
 but use it how you want really

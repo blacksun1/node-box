@@ -1,0 +1,229 @@
+# Copyright 2017 Simon Bruce (http://www.github.com/blacksun1/node-box)
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+#
+
+Description: node backed with nginx. Also includes Mongo.
+
+Parameters:
+    ImageId:
+        Description: The Base image (AMI)
+        Type: String
+        Default: ami-96666ff5 # Ubuntu 16 @ bs-aws-sydney
+    InstanceType:
+        Description: "The instance type, such as t2.micro."
+        Type: String
+        Default: t2.micro
+        AllowedValues:
+        - t2.nano
+        - t2.micro
+        - t2.medium
+    KeyName:
+        Description: The name of the key to be attached to the server
+        Type: String
+    MongoDbAdminUser:
+        Description: The mongo db admin user
+        Type: String
+        NoEcho: true
+    MongoDbAdminPassword:
+        Description: The mongo db admin password
+        Type: String
+        NoEcho: true
+
+Resources:
+    nodeServerSecurityGroup:
+        Type: "AWS::EC2::SecurityGroup"
+        Properties:
+            GroupName: nodeServerSecurityGroup
+            GroupDescription: Let the good stuff in
+            SecurityGroupIngress:
+            - IpProtocol: tcp
+              FromPort: "22"
+              ToPort: "22"
+              CidrIp: 0.0.0.0/0
+            - IpProtocol: tcp
+              FromPort: "80"
+              ToPort: "80"
+              CidrIp: 0.0.0.0/0
+
+    nodeServer:
+        Type: "AWS::EC2::Instance"
+        Properties:
+            ImageId:
+                Ref: ImageId
+            InstanceType:
+                Ref: InstanceType
+            KeyName:
+                Ref: KeyName
+            SecurityGroups:
+            - Ref: nodeServerSecurityGroup
+            Tags:
+            - Key: Name
+              Value: nodeUp
+            UserData:
+                Fn::Base64:
+                    !Sub
+                    - |
+                        #!/bin/bash -xe
+
+                        print_title() {
+                            printf '\n\n****\n**** %s\n****\n\n' "${!1}"
+                        }
+                        print_title 'INSTALLING EVERYTHING'
+
+                        sudo apt-get update
+                        sudo DEBIAN_FRONTEND=noninteractive apt-get -yq -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" dist-upgrade
+                        sudo apt autoremove -yq
+
+                        print_title 'Enable firewall'
+
+                        sudo ufw allow OpenSSH
+                        sudo ufw enable
+                        sudo ufw status
+
+                        print_title 'Install Mongo'
+
+                        sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv 0C49F3730359A14518585931BC711F9BA15703C6
+                        echo "deb [ arch=amd64,arm64 ] http://repo.mongodb.org/apt/ubuntu xenial/mongodb-org/3.4 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-3.4.list
+                        sudo apt-get update
+                        sudo apt-get install mongodb-org -yq
+                        sudo service mongod start
+                        sleep 5
+                        [ -f /var/log/mongodb/mongod.log ] && grep --quiet 'waiting for connections on port 27017' /var/log/mongodb/mongod.log && echo mongod is running || echo mongod not running
+                        sudo systemctl enable mongod
+
+                        echo Creating mongo user ${MongoDbAdminUser}
+                        cat <<EOF | mongo
+                        use admin
+                        db.createUser({
+                            user: "${MongoDbAdminUser}",
+                            pwd: "${MongoDbAdminPassword}",
+                            roles: [ { role: "userAdminAnyDatabase", db: "admin" } ]
+                        })
+                        exit
+                        EOF
+
+                        cat <<EOF | sudo tee -a /etc/mongod.conf
+                        security:
+                          authorization: "enabled"
+                        EOF
+
+                        sudo systemctl restart mongod
+                        sleep 5
+
+                        sudo systemctl status mongod
+
+                        print_title 'Add node user'
+
+                        sudo useradd --comment 'node user' --create-home --home-dir /usr/node --user-group node
+
+                        print_title 'Install NodeJS'
+
+                        sudo apt-get install build-essential -yq
+                        curl -sL https://deb.nodesource.com/setup_6.x | bash -
+                        sudo apt-get install nodejs -yq
+
+                        print_title 'Install Hello World test script'
+
+                        sudo -u node mkdir /usr/node/www
+                        sudo -u node curl http://blacksun.cx/new_look/image/main_heading.jpg > /usr/node/www/image.jpeg
+                        sudo -u node mkdir /usr/node/api
+                        cat <<'EOF' | sudo --set-home -u node tee /usr/node/api/testme.js
+                        const http = require('http');
+
+                        const hostname = '127.0.0.1';
+                        const port = 8080;
+
+                        const server = http.createServer((req, res) => {
+                          console.log('recieved request');
+                          res.statusCode = 200;
+                          res.setHeader('Content-Type', 'text/plain');
+                          res.end('Hello World\n');
+                          console.log('request handled');
+                        });
+
+                        server.listen(port, hostname, () => {
+                          console.log(`Server running at http://${!hostname}:${!port}/`);
+                        });
+                        EOF
+
+                        print_title 'Install PM2'
+
+                        sudo npm install -g pm2
+                        export PM2_HOME=/usr/node
+                        sudo pm2 startup systemd -u node --hp ${!PM2_HOME}
+                        sudo --set-home -u node pm2 start ${!PM2_HOME}/api/testme.js
+                        sudo --set-home -u node pm2 save
+
+                        print_title 'Install nginx'
+
+                        sudo apt-get install nginx -yq
+                        sudo service nginx start
+                        sudo systemctl enable nginx
+                        sleep 5
+                        sudo ufw allow http
+                        sudo ufw allow https
+
+                        cat <<'EOF' | sudo tee /etc/nginx/sites-available/proxy
+
+                        upstream my_nodejs_upstream {
+                            server 127.0.0.1:8080;
+                            keepalive 64;
+                        }
+
+                        server {
+                            listen 80;
+                            server_name my_nodejs_server;
+
+                            location / {
+                                root /usr/node/www;
+                            }
+
+                            location /api {
+                                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                                proxy_set_header Host $http_host;
+                                proxy_set_header X-NginX-Proxy true;
+                                proxy_http_version 1.1;
+                                proxy_set_header Upgrade $http_upgrade;
+                                proxy_set_header Connection "upgrade";
+                                proxy_max_temp_file_size 0;
+                                proxy_pass http://my_nodejs_upstream/;
+                                proxy_redirect off;
+                                proxy_read_timeout 240s;
+                            }
+                        }
+
+                        EOF
+                        sudo rm -f  /etc/nginx/sites-enabled/default
+                        sudo ln -sf /etc/nginx/sites-available/proxy -T /etc/nginx/sites-enabled/proxy
+                        sudo service nginx restart
+
+                        print_title 'Final reboot'
+
+                        sudo shutdown -r now
+                    -
+                        MongoDbAdminUser: { Ref: MongoDbAdminUser }
+                        MongoDbAdminPassword: { Ref: MongoDbAdminPassword }
+Outputs:
+    ServerDNS:
+        Description: The domain name of the server
+        Value:
+            Fn::GetAtt: [ nodeServer, PublicDnsName ]
+
+

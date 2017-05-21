@@ -45,6 +45,11 @@ Parameters:
         Description: The mongo db admin password
         Type: String
         NoEcho: true
+    NodeUserAuthorisedKey:
+        Description: A public key to allow a ssh to the node user
+        Type: String
+        NoEcho: true
+        Default: ""
 
 Resources:
     nodeServerSecurityGroup:
@@ -132,6 +137,12 @@ Resources:
                         print_title 'Add node user'
 
                         sudo useradd --comment 'node user' --create-home --home-dir /usr/node --user-group node
+                        if [ -n "${NodeUserAuthorisedKey}" ]; then
+                            sudo -u node mkdir /usr/node/.ssh
+                            sudo -u node chmod 700 /usr/node/.ssh
+                            echo "${NodeUserAuthorisedKey}" | sudo -u node tee /usr/node/.ssh/authorized_keys
+                            sudo -u node chmod 600 /usr/node/.ssh/authorized_keys
+                        fi
 
                         print_title 'Install NodeJS'
 
@@ -220,6 +231,7 @@ Resources:
                     -
                         MongoDbAdminUser: { Ref: MongoDbAdminUser }
                         MongoDbAdminPassword: { Ref: MongoDbAdminPassword }
+                        NodeUserAuthorisedKey: { Ref: NodeUserAuthorisedKey}
 Outputs:
     ServerDNS:
         Description: The domain name of the server
